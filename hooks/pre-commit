@@ -1,0 +1,31 @@
+#!/bin/bash
+
+has_physical_tabs()
+{
+    ! git diff --staged -- $1 | perl -nle "exit 1 if /^\+.*\t/"
+}
+
+has_trailing_whitespaces()
+{
+    ! git diff --staged -- $1 | perl -nle "exit 1 if /^\+.*\s$/"
+}
+
+COMMIT_PASSED=1
+for f in $(git diff --staged --name-only);
+do
+    if has_physical_tabs $f; then
+        COMMIT_PASSED=0
+        >&2 echo "error: file '$f' introduces physical tabs"
+    fi
+    if has_trailing_whitespaces $f; then
+        COMMIT_PASSED=0
+        >&2 echo "error: file '$f' introduces trailing white spaces"
+    fi
+done
+
+if [[ $COMMIT_PASSED -eq 0 ]]; then
+    >&2 echo "commit rejected"
+    exit 1
+fi
+
+exit 0

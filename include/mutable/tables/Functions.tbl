@@ -1,0 +1,20 @@
+/* vim: set filetype=cpp: */
+
+#ifndef M_FUNCTION
+#error "define M_FUNCTION(NAME, KIND) before including this file"
+#endif
+
+/*          Function  | Kind */
+
+/* Aggregate functions */
+M_FUNCTION( COUNT,      FN_Aggregate)
+M_FUNCTION( SUM,        FN_Aggregate)
+M_FUNCTION( AVG,        FN_Aggregate)
+M_FUNCTION( MIN,        FN_Aggregate)
+M_FUNCTION( MAX,        FN_Aggregate)
+
+/* Tests */
+M_FUNCTION( ISNULL,     FN_Scalar)
+
+/* Casts */
+M_FUNCTION( INT,        FN_Scalar)

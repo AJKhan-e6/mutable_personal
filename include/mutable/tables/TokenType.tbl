@@ -1,0 +1,25 @@
+/* vim: set filetype=cpp: */
+
+M_TOKENTYPE(IDENTIFIER)
+M_TOKENTYPE(STRING_LITERAL)
+M_TOKENTYPE(DATE)
+M_TOKENTYPE(DATE_TIME)
+M_TOKENTYPE(INSTRUCTION)
+
+M_TOKENTYPE(OCT_INT)
+M_TOKENTYPE(HEX_INT)
+M_TOKENTYPE(DEC_INT)
+M_TOKENTYPE(HEX_FLOAT)
+M_TOKENTYPE(DEC_FLOAT)
+
+#define M_KEYWORD(a,b) M_TOKENTYPE(a)
+#include "mutable/tables/Keywords.tbl"
+#undef M_KEYWORD
+
+#define M_OPERATOR(a) M_TOKENTYPE(a)
+#include "mutable/tables/Operators.tbl"
+#undef M_OPERATOR
+
+M_TOKENTYPE(BACKSLASH)
+M_TOKENTYPE(ERROR)
+M_TOKENTYPE(EOF) // must be the last line of this file

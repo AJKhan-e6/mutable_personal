@@ -1,0 +1,607 @@
+# vim: set expandtab tabstop=4 shiftwidth=4:
+#-----------------------------------------------------------------------------------------------------------------------
+# GENERAL
+#-----------------------------------------------------------------------------------------------------------------------
+
+variables:
+    PYTHON_VERSION: "3.10"
+
+default:
+    before_script:
+        - >
+            # if [ "$CI_COMMIT_REF_PROTECTED" == "true" ];
+            # then
+                # echo "Running on protected branch.  Importing SSH identity."
+                mkdir -p "${HOME}/.ssh"
+                chmod 700 "${HOME}/.ssh"
+                eval $(ssh-agent -s)
+                echo "${SSH_PRIVATE_KEY}" | tr -d '\r' | ssh-add -
+                echo "${SSH_GITHUB_DEPLOY_KEY}" | tr -d '\r' | ssh-add -
+                echo "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+                chmod 644 "${HOME}/.ssh/known_hosts"
+            # else
+                # echo "Running on unprotected branch."
+            # fi
+
+
+workflow:
+    rules:
+        - if: $CI_MERGE_REQUEST_IID # run on MRs
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH # run on main branch after MR
+        - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS # don't run on individual commits that are part of a MR…
+          when: never # …to prevent duplicate pipelines for branches with a MR
+
+
+# Define the stages of the pipeline.
+stages:
+    - check
+    - build:debug
+    - test:debug
+    - build:release
+    - test:release
+    - report
+    - upload
+    - publish
+
+.build_cache:
+    cache:
+        - key: "third-party"
+          paths:
+              - "third-party"
+              - "build/{debug,release,coverage}/**/*-download"                          # cache CMake download stamps
+              - "build/{debug,release,coverage}/**/*-gitclone-lastrun.txt"              # cache CMake Git stamps
+              - "build/{debug,release,coverage}/**/*-gitinfo.txt"                       # cache CMake Git stamps
+              - "build/{debug,release,coverage}/**/*-configure"                         # cache CMake configure stamps
+
+        - key: "build:${BUILD_TYPE}:${LIBRARY_TYPE}"
+          paths:
+              - "build/${BUILD_TYPE}/bin"                                               # cache our executables
+              - "build/${BUILD_TYPE}/lib/libmutable.{a,so,dylib,dll}"                   # cache our library
+              - "build/${BUILD_TYPE}/third-party/src/*-build"                           # cache third-party build
+              - "build/${BUILD_TYPE}/src/**/*.o"                                        # cache all object files
+
+.static:
+    variables:
+        LIBRARY_TYPE: static
+
+.shared:
+    variables:
+        LIBRARY_TYPE: shared
+
+.debug:
+    variables:
+        BUILD_TYPE: debug
+
+.release:
+    variables:
+        BUILD_TYPE: release
+    rules:
+        # run on default branch
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: on_success
+        # run on branches with `release` in their name
+        - if: $CI_COMMIT_BRANCH =~ /release/i
+          when: on_success
+        # never run on merge requests in WIP/Draft mode
+        - if: $CI_MERGE_REQUEST_TITLE == null || ($CI_MERGE_REQUEST_TITLE =~ /^wip:/i || $CI_MERGE_REQUEST_TITLE =~ /^draft:/i)
+          when: never
+        # run on other merge requests (i.e. not marked as WIP/Draft)
+        - if: $CI_MERGE_REQUEST_TITLE
+          when: on_success
+
+.coverage:
+    variables:
+        BUILD_TYPE: coverage
+
+.upload:
+    rules:
+        # Do not run if tag was created
+        - if: $CI_COMMIT_TAG
+          when: never
+        # run on default branch
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: on_success
+
+.publish:
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: on_success
+        - when: never
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# CHECK
+#-----------------------------------------------------------------------------------------------------------------------
+
+check:syntax:
+    stage: check
+    script:
+        - echo ${CI_COMMIT_BEFORE_SHA} ${CI_COMMIT_SHA} ${CI_COMMIT_REF_NAME} | hooks/pre-receive
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# DEBUG BUILD
+#-----------------------------------------------------------------------------------------------------------------------
+
+build:debug:linux-amd64:
+    stage: build:debug
+    tags:
+        - linux
+        - amd64
+    extends:
+        - .debug
+        - .shared
+        - .build_cache
+    script:
+        - cmake -S . -B build/${BUILD_TYPE}
+          --fresh
+          -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_SHARED_LIBS=ON
+          -DWITH_V8=ON
+          -DENABLE_SANITIZERS=ON
+          -DENABLE_SANITY_FIELDS=ON
+        - cmake --build build/${BUILD_TYPE} --target gitversion all unittest
+        - find build/${BUILD_TYPE}/third-party -name '*.so' -exec cp {} build/${BUILD_TYPE}/lib \; # collect shared libraries
+        - find build/${BUILD_TYPE}/third-party -name '*.so.*' -exec cp {} build/${BUILD_TYPE}/lib \; # collect shared libraries
+    artifacts:
+        paths:
+            - "build/${BUILD_TYPE}/bin/{lex,parse,check,shell,unittest}"
+            - "build/${BUILD_TYPE}/lib/"
+        expire_in: 1 day
+
+build:debug:macos-amd64:
+    stage: build:debug
+    tags:
+        - macos
+        - amd64
+    extends:
+        - .debug
+        - .shared
+        - .build_cache
+    script:
+        - cmake -S . -B build/${BUILD_TYPE}
+          --fresh
+          -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_SHARED_LIBS=ON
+          -DWITH_V8=ON
+          -DENABLE_SANITIZERS=ON
+          -DENABLE_SANITY_FIELDS=ON
+        - cmake --build build/${BUILD_TYPE} --target gitversion all unittest
+        - find build/${BUILD_TYPE}/third-party -name '*.dylib' -exec cp {} build/${BUILD_TYPE}/lib \; # collect shared libraries
+        - find build/${BUILD_TYPE}/third-party -name '*.dylib.*' -exec cp {} build/${BUILD_TYPE}/lib \; # collect shared libraries
+    artifacts:
+        paths:
+            - "build/${BUILD_TYPE}/bin/{lex,parse,check,shell,unittest}"
+            - "build/${BUILD_TYPE}/lib/"
+        expire_in: 1 day
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# TEST DEBUG
+#-----------------------------------------------------------------------------------------------------------------------
+
+unittest:linux-amd64:
+    stage: test:debug
+    tags:
+        - linux
+        - amd64
+    needs:
+        - job: "build:debug:linux-amd64"
+          artifacts: true
+    script:
+        - pipenv --python $PYTHON_VERSION sync
+        - env UBSAN_OPTIONS=print_stacktrace=1 ASAN_OPTIONS=detect_stack_use_after_return=1 pipenv run utils/unittest-parallel.py -r --out unittest-results.xml build/debug/bin/unittest
+    artifacts:
+        when: always
+        paths:
+            - unittest-results.xml
+        reports:
+            junit: unittest-results.xml
+
+unittest:macos-amd64:
+    stage: test:debug
+    tags:
+        - macos
+        - amd64
+    needs:
+        - job: "build:debug:macos-amd64"
+          artifacts: true
+    script:
+        - pipenv --python $PYTHON_VERSION sync
+        - env UBSAN_OPTIONS=print_stacktrace=1 ASAN_OPTIONS=detect_stack_use_after_return=1:detect_container_overflow=0 MallocNanoZone=0 pipenv run utils/unittest-parallel.py -r --out unittest-results.xml build/debug/bin/unittest
+    artifacts:
+        when: always
+        paths:
+            - unittest-results.xml
+        reports:
+            junit: unittest-results.xml
+
+integrationtest:linux-amd64:
+    stage: test:debug
+    tags:
+        - linux
+        - amd64
+    needs:
+        - job: "build:debug:linux-amd64"
+          artifacts: true
+    script:
+        - pipenv --python $PYTHON_VERSION sync
+        - env UBSAN_OPTIONS=print_stacktrace=1 ASAN_OPTIONS=detect_stack_use_after_return=1 --unset=TERM pipenv run test/IntegrationTest.py --required-only --debug build/debug
+
+integrationtest:macos-amd64:
+    stage: test:debug
+    tags:
+        - macos
+        - amd64
+    needs:
+        - job: "build:debug:macos-amd64"
+          artifacts: true
+    script:
+        - pipenv --python $PYTHON_VERSION sync
+        - env UBSAN_OPTIONS=print_stacktrace=1 ASAN_OPTIONS=detect_stack_use_after_return=1:detect_container_overflow=0 MallocNanoZone=0 --unset=TERM pipenv run test/IntegrationTest.py --required-only --debug build/debug
+
+ensure-exported-symbols:debug:linux:
+    stage: test:debug
+    tags:
+        - linux
+    extends:
+        - .debug
+        - .shared
+    needs:
+        - job: "build:debug:linux-amd64"
+          artifacts: true
+    script:
+        - llvm-nm -C build/${BUILD_TYPE}/lib/libmutable.so | awk 'BEGIN{rc=1}; /T m::init\(\)/{rc=0}; END{exit rc}'
+
+ensure-exported-symbols:debug:macos:
+    stage: test:debug
+    tags:
+        - macos
+    extends:
+        - .debug
+        - .shared
+    needs:
+        - job: "build:debug:macos-amd64"
+          artifacts: true
+    script:
+        - llvm-nm -C build/${BUILD_TYPE}/lib/libmutable.dylib | awk 'BEGIN{rc=1}; /T m::init\(\)/{rc=0}; END{exit rc}'
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# RELEASE BUILD
+#-----------------------------------------------------------------------------------------------------------------------
+
+build:release:linux-amd64:
+    stage: build:release
+    tags:
+        - linux
+        - amd64
+    extends:
+        - .release
+        - .static
+        - .build_cache
+    script:
+        - cmake -S . -B build/${BUILD_TYPE}
+          --fresh
+          -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DWITH_V8=ON
+          -DENABLE_SANITIZERS=OFF
+          -DENABLE_SANITY_FIELDS=OFF
+        - cmake --build build/${BUILD_TYPE} --target gitversion shell cardinality_gen
+        - mkdir -p mutable/lib mutable/bin
+        - cp -R include mutable
+        - cp build/${BUILD_TYPE}/lib/libmutable_bundled.a mutable/lib
+        - cp build/${BUILD_TYPE}/bin/cardinality_gen mutable/bin
+        - cp build/${BUILD_TYPE}/bin/shell mutable/bin
+    artifacts:
+        paths:
+            - "mutable"
+        expire_in: 1 day
+
+build:release:macos-amd64:
+    stage: build:release
+    tags:
+        - macos
+        - amd64
+    extends:
+        - .release
+        - .static
+        - .build_cache
+    script:
+        - cmake -S . -B build/${BUILD_TYPE}
+          --fresh
+          -G Ninja
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=OFF
+          -DWITH_V8=ON
+          -DENABLE_SANITIZERS=OFF
+          -DENABLE_SANITY_FIELDS=OFF
+        - cmake --build build/${BUILD_TYPE} --target gitversion shell cardinality_gen
+        - mkdir -p mutable/lib mutable/bin
+        - cp -R include mutable
+        - cp build/${BUILD_TYPE}/lib/libmutable_bundled.a mutable/lib
+        - cp build/${BUILD_TYPE}/bin/cardinality_gen mutable/bin
+        - cp build/${BUILD_TYPE}/bin/shell mutable/bin
+    artifacts:
+        paths:
+            - "mutable"
+        expire_in: 1 day
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# TEST RELEASE
+#-----------------------------------------------------------------------------------------------------------------------
+
+ensure-exported-symbols:release:linux:
+    stage: test:release
+    tags:
+        - linux
+    extends:
+        - .release
+        - .static
+    needs:
+        - job: "build:release:linux-amd64"
+          artifacts: true
+    script:
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T m::init\(\)/{rc=0}; END{exit rc}'
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T v8::V8::Initialize\(int\)/{rc=0}; END{exit rc}'
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T wasm::IString::interned\(/{rc=0}; END{exit rc}'
+
+ensure-exported-symbols:release:macos:
+    stage: test:release
+    tags:
+        - macos
+    extends:
+        - .release
+        - .static
+    needs:
+        - job: "build:release:macos-amd64"
+          artifacts: true
+    script:
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T m::init\(\)/{rc=0}; END{exit rc}'
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T v8::V8::Initialize\(/{rc=0}; END{exit rc}'
+        - llvm-nm -C mutable/lib/libmutable_bundled.a | awk 'BEGIN{rc=1}; /T wasm::IString::interned\(/{rc=0}; END{exit rc}'
+
+#-----------------------------------------------------------------------------------------------------------------------
+# REPORT
+#-----------------------------------------------------------------------------------------------------------------------
+
+report:doxygen:
+    stage: report
+    tags:
+        - nginx
+    script:
+        - doxygen -q Doxyfile 2>doxygen.log
+        - rm -rf /srv/http/mutable/doxy
+        - mkdir -p /srv/http/mutable/doxy
+        - cp -rf doxy/html/* /srv/http/mutable/doxy
+        - scp -r doxy/html/* mutable@playground.bigdata.uni-saarland.de:/srv/http/mutable-doxy
+    artifacts:
+        paths:
+            - "doxygen.log"
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: on_success
+        - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /report/i
+          when: on_success
+
+report:coverage:
+    stage: report
+    tags:
+        - nginx
+    needs: [ "build:debug:linux-amd64" ]
+    script:
+        - utils/coverage.sh
+        - rm -rf /srv/http/mutable/coverage
+        - mv build/${BUILD_TYPE}/html /srv/http/mutable/coverage
+    coverage: '/lines\.+: \d+\.\d+/'
+    extends:
+        - .coverage
+        - .shared
+        - .build_cache
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+          when: on_success
+        - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /coverage/i
+          when: on_success
+
+#-----------------------------------------------------------------------------------------------------------------------
+# UPLOAD GENERIC PACKAGE & CREATE GITLAB RELEASE
+#-----------------------------------------------------------------------------------------------------------------------
+
+upload:tag-version:
+    stage: upload
+    extends:
+        - .upload
+    script:
+        # Find the latest version tag in the git log (ignore failure since we handle it inside this script)
+        - latest_version_tag=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null) || true
+        # If no version tags are found, start with v0.0.0
+        # Else get the version number from the latest version tag
+        - |
+            if [ -z "$latest_version_tag" ]; then
+                latest_version="0.0.0"
+            else
+                latest_version=$(echo "$latest_version_tag" | tail -c +2)
+            fi
+        - echo "New version tag is ${new_version}"
+        - |
+         if git tag --points-at HEAD | grep -q "v[0-9]\+\.[0-9]\+\.[0-9]\+"; then
+             echo "Latest commit already has a version tag '$latest_version_tag'"
+             echo "TAG=${latest_version_tag}" >> variables.env
+         else
+             echo "Bump patch number"
+             patch=$(echo "$latest_version" | awk -F. '{print $3}')
+             ((new_patch = patch + 1))
+             new_version=$(printf "v%s.%s.%s" "$(echo "$latest_version" | head -c 1)" "$(echo "$latest_version" | cut -d "." -f 2)" "$new_patch")
+             echo "TAG=${new_version}" >> variables.env
+             echo "Push new tag '$new_version' to git."
+             curl --fail --header "PRIVATE-TOKEN: ${ADD_RELEASES_TOKEN}" --request POST "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/tags?tag_name=${new_version}&ref=${CI_COMMIT_SHA}"
+         fi
+    artifacts:
+        reports:
+            dotenv: variables.env
+
+
+upload:package:linux-amd64:
+    stage: upload
+    extends:
+        - .upload
+    tags:
+        - linux
+        - amd64
+    needs:
+        - job: build:release:linux-amd64
+          artifacts: true
+        - job: upload:tag-version
+          artifacts: true
+    script:
+        - cd mutable
+        - zip -r mutable-linux-amd64.zip *
+        - >
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file mutable-linux-amd64.zip
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/mutable/${TAG}/mutable-linux-amd64-${TAG}.zip"
+    artifacts:
+        paths:
+            - "mutable/mutable-linux-amd64.zip"
+        expire_in: 1 day
+
+
+upload:package:macos-amd64:
+    stage: upload
+    extends:
+        - .upload
+    tags:
+        - macos
+        - amd64
+    needs:
+        - job: build:release:macos-amd64
+          artifacts: true
+        - job: upload:tag-version
+          artifacts: true
+    script:
+        - cd mutable
+        - zip -r mutable-macos-amd64.zip *
+        - >
+          curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file mutable-macos-amd64.zip
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/mutable/${TAG}/mutable-macos-amd64-${TAG}.zip"
+    artifacts:
+        paths:
+            - "mutable/mutable-macos-amd64.zip"
+        expire_in: 1 day
+
+
+upload:release:
+    stage: upload
+    extends:
+        - .upload
+    needs:
+        - job: upload:package:linux-amd64
+        - job: upload:package:macos-amd64
+        - job: upload:tag-version
+          artifacts: true
+    script:
+        # Create Release on GitLab
+        - >
+          curl -v --fail --header "Content-Type: application/json"
+          --header "PRIVATE-TOKEN: ${ADD_RELEASES_TOKEN}"
+          --data "{ \"name\": \"Mutable Release ${TAG}\", \"tag_name\": \"${TAG}\",
+          \"assets\": { \"links\": [
+          { \"name\": \"mutable linux-amd64\",
+          \"url\": \"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/mutable/${TAG}/mutable-linux-amd64-${TAG}.zip\",
+          \"link_type\": \"package\" },
+          { \"name\": \"mutable macos-amd64\",
+          \"url\": \"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/mutable/${TAG}/mutable-macos-amd64-${TAG}.zip\",
+          \"link_type\": \"package\" } ] } }"
+          --request POST "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases"
+
+#-----------------------------------------------------------------------------------------------------------------------
+# MIRROR TO GITHUB
+#-----------------------------------------------------------------------------------------------------------------------
+#
+publish:github-repository:
+    stage: publish
+    extends:
+        - .publish
+    script:
+        - git remote add gitlab git@gitlab.cs.uni-saarland.de:bigdata/mutable/mutable.git || true
+        - git remote remove github || true
+        - git remote add github git@github.com:mutable-org/mutable.git
+        - git fetch gitlab
+        - git push --tags github gitlab/$CI_DEFAULT_BRANCH:$CI_DEFAULT_BRANCH
+
+
+publish:github-release:
+    stage: publish
+    extends:
+        - .publish
+    needs:
+        - job: publish:github-repository
+        - job: upload:package:linux-amd64
+          artifacts: true
+        - job: upload:package:macos-amd64
+          artifacts: true
+        - job: upload:tag-version
+          artifacts: true
+    script:
+      # generate JSON Web Token (JWT) for our GitHub App
+      - |
+        header=$(echo -n '{"typ":"JWT","alg":"RS256"}' | openssl base64 -A | sed 's/=*$//g')
+        payload=$(echo -n '{"iat": '$(date +%s)', "exp": '$(($(date +%s) + 590))', "iss": "317308" }' | openssl base64 -A | sed 's/=*$//g')
+        signature=$(echo -n "$header.$payload" | openssl dgst -sha256 -sign <(echo "$SSH_GITHUB_APP_TOKEN") | openssl base64 -A | sed 's/=*$//g' | tr '/' '_' | tr '+' '-')
+        jwt="$header.$payload.$signature"
+      # generate installation access token for the mutable GitHub repository
+      - >
+        response=$(curl -L -f
+        -H "Accept: application/vnd.github+json"
+        -H "Authorization: Bearer $jwt"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        "https://api.github.com/app/installations/36391181/access_tokens"
+        -d '{"repository":"mutable","permissions":{"contents":"write"}}')
+      - |
+        inst_acc_token=$(echo "$response" | grep -oP '(?<=token": ").*?(?=")')
+      # create GitHub release
+      - >
+        response=$(curl -L -f
+        -X POST
+        -H "Accept: application/vnd.github+json"
+        -H "Authorization: Bearer $inst_acc_token"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        "https://api.github.com/repos/mutable-org/mutable/releases"
+        -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"main\"}")
+
+      - |
+        upload_url=$(echo "$response" | grep -oP '(?<=upload_url": ").*?(?={)')
+
+      # add assets to release
+      - >
+        curl -L -f
+        -X POST
+        -H "Accept: application/vnd.github+json"
+        -H "Authorization: Bearer $inst_acc_token"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        -H "Content-Type: application/octet-stream"
+        "${upload_url}?name=mutable-linux-amd64-${TAG}.zip"
+        --data-binary "@mutable/mutable-linux-amd64.zip"
+
+      - >
+        curl -L -f
+        -X POST
+        -H "Accept: application/vnd.github+json"
+        -H "Authorization: Bearer $inst_acc_token"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        -H "Content-Type: application/octet-stream"
+        "${upload_url}?name=mutable-macos-amd64-${TAG}.zip"
+        --data-binary "@mutable/mutable-macos-amd64.zip"

@@ -1,0 +1,11 @@
+add_library(
+    storage
+    OBJECT
+    ColumnStore.cpp
+    DataLayout.cpp
+    DataLayoutFactory.cpp
+    PaxStore.cpp
+    RowStore.cpp
+    Store.cpp
+    store_manip.cpp
+)
