@@ -74,7 +74,11 @@ struct M_EXPORT Value
     template<typename T>
     std::conditional_t<std::is_pointer_v<T>, T, T&> as() {
 #ifdef M_ENABLE_SANITY_FIELDS
-#define VALIDATE_TYPE(TY) M_insist(this->type == V##TY)
+#define VALIDATE_TYPE(TY) \
+    if (this->type != V##TY) { \
+        std::cerr << "Validation failed: Expected type " << #TY << " but got type " << this->type << std::endl; \
+        M_insist(this->type == V##TY); \
+    }
 #else
 #define VALIDATE_TYPE(TY)
 #endif

@@ -814,7 +814,12 @@ std::unique_ptr<Spn::Node> Spn::learn_node(LearningData &ld)
                     continue;
                 }
                 auto std_lower_bound = std::lower_bound(bins.begin(), bins.end(), current_value);
-                std_lower_bound->cumulative_probability++;
+
+                if (std_lower_bound != bins.end()) {
+                    
+                    std_lower_bound->cumulative_probability++;
+                }
+                
             }
 
             float lower_bound_probability = lower_bound_counter / float(num_rows);

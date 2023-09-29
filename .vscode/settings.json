@@ -92,6 +92,9 @@
         "stack": "cpp",
         "ranges": "cpp",
         "span": "cpp",
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "rope": "cpp",
+        "*.tpp": "cpp",
+        "valarray": "cpp"
     }
 }

@@ -53,6 +53,7 @@ SpnWrapper SpnWrapper::learn_spn_table(const char *name_of_database, const char 
 
         auto attribute = table.schema()[current_column].id.name;
         attribute_to_id.emplace(attribute, current_column - primary_key_count);
+        std::cout << "The current attribute is: " << attribute << std::endl;
 
         auto &type = table.at(current_column).type;
         std::size_t current_row = 0;
@@ -88,6 +89,24 @@ SpnWrapper SpnWrapper::learn_spn_table(const char *name_of_database, const char 
             });
             execute_query(diag, *select_stmt, std::move(callback_data));
         }
+
+        // Adding handler for decimal values 
+        // if (type->is_decimal()) {
+        //     std::cout << "The current attribute, which should be decimal, is: " << attribute << std::endl;
+        //     if (leaf_types[current_column - primary_key_count] == Spn::AUTO) {
+        //         leaf_types[current_column - primary_key_count] = Spn::DISCRETE;
+        //     }
+        //     auto callback_data = std::make_unique<CallbackOperator>([&](const Schema &S, const Tuple &T) {
+        //         if (T.is_null(current_column)) {
+        //             null_matrix(current_row, current_column - primary_key_count) = 1;
+        //             data(current_row, current_column - primary_key_count) = 0;
+        //         } else {
+        //             data(current_row, current_column - primary_key_count) = T.get(current_column).as_f();
+        //         }
+        //         current_row++;
+        //     });
+        //     execute_query(diag, *select_stmt, std::move(callback_data));
+        // }
 
         if (type->is_integral()) {
             if (leaf_types[current_column - primary_key_count] == Spn::AUTO) {
@@ -126,6 +145,26 @@ SpnWrapper SpnWrapper::learn_spn_table(const char *name_of_database, const char 
     }
 
     db.cardinality_estimator(std::move(old_estimator));
+
+    // Iterate through the vector and print each element
+    std::cout << "Contents of leaf_types vector:" << std::endl;
+    for (const Spn::LeafType& type : leaf_types) {
+        switch (type) {
+            case Spn::LeafType::AUTO:
+                std::cout << "Auto" << std::endl;
+                break;
+            case Spn::LeafType::DISCRETE:
+                std::cout << "Discrete" << std::endl;
+                break;
+            case Spn::LeafType::CONTINUOUS:
+                std::cout << "Continuous" << std::endl;
+                break;
+            // Add cases for other enum values if needed
+            default:
+                std::cout << "Unknown" << std::endl;
+                break;
+        }
+    }
 
     return SpnWrapper(Spn::learn_spn(data, null_matrix, leaf_types), std::move(attribute_to_id));
 }

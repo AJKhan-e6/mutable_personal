@@ -343,6 +343,18 @@ struct M_EXPORT SpnEstimator : CardinalityEstimatorCRTP<SpnEstimator>
         { }
 
         void assign_to(Subproblem) override { /* nothing to be done */ }
+
+        const std::vector<std::size_t>& getMaxFrequencies() const {
+            return max_frequencies_;
+        }
+
+        std::size_t getNumRows() const {
+            return num_rows_;
+        }
+
+        const table_spn_map& getSpns() const {
+            return spns_;
+        }
     };
 
     private:

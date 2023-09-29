@@ -457,7 +457,7 @@ struct FilterTranslator : ast::ConstASTExprVisitor {
                             value = float(val.as_i());
                             break;
                         case Numeric::N_Float:
-                            value = val.as_f();
+                            value = float(val.as_d());
                             break;
                         case Numeric::N_Decimal:
                             value = float(val.as_d());
@@ -587,6 +587,10 @@ std::size_t SpnEstimator::max_frequency(const SpnDataModel &data, SpnJoin &join)
     /* maximum frequency is only computed on data models which only have one Spn */
     const SpnWrapper &spn = data.spns_.begin()->second.get();
 
+    std::cout << "The table for spn is: " << data.spns_.begin()->first << "\t the spn_id is: " << spn_id << "\t and the number of distinct values is: " << spn.estimate_number_distinct_values(spn_id) << std::endl;
+
+    std::cout << "data.num_rows_ is: " << data.num_rows_  << std::endl;
+
     return is_primary_key ? 1 : data.num_rows_ / spn.estimate_number_distinct_values(spn_id);
 }
 
@@ -624,8 +628,7 @@ std::unique_ptr<DataModel> SpnEstimator::estimate_scan(const QueryGraph &G, Subp
     }
 }
 
-std::unique_ptr<DataModel>
-SpnEstimator::estimate_filter(const QueryGraph&, const DataModel &_data, const cnf::CNF &filter) const
+std::unique_ptr<DataModel> SpnEstimator::estimate_filter(const QueryGraph&, const DataModel &_data, const cnf::CNF &filter) const
 {
 
     
@@ -639,6 +642,10 @@ SpnEstimator::estimate_filter(const QueryGraph&, const DataModel &_data, const c
         std::cout << "attribute_to_id   Key: " << pair.first << ", Value: " << pair.second << std::endl;
     }
 
+    std::cout << "The number of rows in the data before filter is: " << data.num_rows_ << std::endl;
+
+
+
     Spn::Filter translated_filter;
     FilterTranslator ft;
 
@@ -647,11 +654,13 @@ SpnEstimator::estimate_filter(const QueryGraph&, const DataModel &_data, const c
     /* only consider clauses with one element, since Spns cannot estimate disjunctions */
     for (auto &clause : filter) {
 
+
         std::cout << "clause Loop entered" << std::endl;
         std::cout << "Clause is " << clause <<std::endl;
 
         M_insist(clause.size() == 1);
         ft(*clause[0]);
+        std::cout << "ft.op is: " << ft.op << "\t and ft.value is: " << ft.value << std::endl;
         unsigned spn_id;
 
         std::cout << "clause[0] is: " << clause[0] << std::endl;
@@ -663,16 +672,45 @@ SpnEstimator::estimate_filter(const QueryGraph&, const DataModel &_data, const c
             throw data_model_exception("Attribute does not exist.");
         }
 
+        std::cout << "spn_id is: " << spn_id << std::endl;
+
         translated_filter.emplace(spn_id, std::make_pair(ft.op, ft.value));
+
+        
+    }
+
+    for (auto &filter : translated_filter){
+        unsigned key = filter.first;
+        // SpnOperator op = filter.second.first;
+        float value = filter.second.second;
+
+        std::cout << "Key: " << key << ", " << ", Value: " << value << std::endl;
     }
 
     /* Save number of rows in the newly constructed data model with the filter applied */
-    new_data->num_rows_ = float(new_data->num_rows_) * spn.likelihood(translated_filter);
+    std::cout << "the likelihood is: " << spn.likelihood(translated_filter) << std::endl;
+    float res = float(new_data->num_rows_) * spn.likelihood(translated_filter);
+    std::cout << "result is: " << res << std::endl;
+    float rounded_result = std::round(res); // Round to the nearest integer
+    std::cout << "rounded result is: " << rounded_result << std::endl;
+
+    new_data->num_rows_ = rounded_result;
+
+    std::cout << "The var new_data->num_rows_ is: " << new_data->num_rows_ << std::endl;
+
+    
+    // spn = spn.update(attribute_to_id, DELETE)
+    // new_data->spns_ = <attribute_to_id, spn>;
+
+    // DELETE THIS AND ASSOCIATED CLASSES IF IT DOESN'T WORK (Associated classes are in SpnWrapper.hpp and Spn.hpp) 
+    // spn.update_num_rows(new_data->num_rows_);
+    
+    std::cout << "The filter model being returned is: " << new_data->num_rows_ << std::endl;
+    std::cout << "The number of rows in the SPN is after filter is: " << spn.num_rows() << std::endl;
     return new_data;
 }
 
-std::unique_ptr<DataModel>
-SpnEstimator::estimate_limit(const QueryGraph&, const DataModel &data, std::size_t limit, std::size_t) const
+std::unique_ptr<DataModel> SpnEstimator::estimate_limit(const QueryGraph&, const DataModel &data, std::size_t limit, std::size_t) const
 {
     auto model = std::make_unique<SpnDataModel>(as<const SpnDataModel>(data));
     model->num_rows_ = std::min(model->num_rows_, limit);
@@ -734,14 +772,38 @@ SpnEstimator::estimate_join(const QueryGraph&, const DataModel &_left, const Dat
 
         /* compute the estimated cardinality of the join via distinct count estimates.
          * See http://www.cidrdb.org/cidr2021/papers/cidr2021_paper01.pdf */
+
+        std::cout << "max_frequencies_ for new_left is: " << std::endl;
+        for (std::size_t freq : new_left->max_frequencies_) {
+            std::cout << " " << freq;
+        }
+        std::cout << std::endl;
+
+        std::cout << "max_frequencies_ for new_right is: " << std::endl;
+        for (std::size_t freq : new_right->max_frequencies_) {
+            std::cout << " " << freq;
+        }
+        std::cout << std::endl;
         std::size_t mf_left = std::accumulate(
                 new_left->max_frequencies_.begin(), new_left->max_frequencies_.end(), 1, std::multiplies<>());
 
         std::size_t mf_right = std::accumulate(
                 new_right->max_frequencies_.begin(), new_right->max_frequencies_.end(), 1, std::multiplies<>());
 
+        
+        // if (mf_left == 0) {mf_left = 1;}
+        // if (mf_right == 0) {mf_right = 1;}
+
+        std::cout << "num_rows_ in new_left is: " << new_left->num_rows_ << std::endl;
+        std::cout << "num_rows_ in new_right is: " << new_right->num_rows_ <<std::endl;
+
+
+
         std::size_t left_clause = new_left->num_rows_ / mf_left;
         std::size_t right_clause = new_right->num_rows_ / mf_right;
+
+        std::cout << "left_clause is: " << left_clause << std::endl;
+        std::cout << "right clause is: " << right_clause << std::endl;
 
         std::size_t num_rows_join = std::min<std::size_t>(left_clause, right_clause) * mf_left * mf_right;
 
